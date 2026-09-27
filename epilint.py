@@ -430,6 +430,38 @@ def paths_from(args: list[str]):
     return sorted(found)
 
 
+def show_verbose_changes(path: Path, before: str, after: str, applied: bool) -> None:
+    """Show the exact changed lines, including invisible blank lines."""
+    old_lines = before.splitlines()
+    new_lines = after.splitlines()
+    old_issues = diagnose(before)
+    new_issues = diagnose(after)
+    action = "corrigé" if applied else "proposé"
+    for tag, old_start, old_end, new_start, new_end in difflib.SequenceMatcher(
+            None, old_lines, new_lines, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        old_chunk = old_lines[old_start:old_end]
+        new_chunk = new_lines[new_start:new_end]
+        if all(not line.strip() for line in old_chunk + new_chunk):
+            rules = "C-G2 (séparation des fonctions)"
+        else:
+            before_rules = {issue.rule for issue in old_issues
+                            if old_start <= issue.line - 1 < old_end}
+            after_rules = {issue.rule for issue in new_issues
+                           if new_start <= issue.line - 1 < new_end}
+            rules = ", ".join(sorted(before_rules - after_rules)) or "mise en forme"
+        print(f"{path}:{old_start + 1}: {action} [{rules}]")
+        for line in old_chunk:
+            print(f"  - {line!r}")
+        for line in new_chunk:
+            print(f"  + {line!r}")
+    if "\r" in before and "\r" not in after:
+        print(f"{path}: {action} [C-G6] fins de ligne CR remplacées par LF")
+    if before and not before.endswith("\n") and after.endswith("\n"):
+        print(f"{path}: {action} [C-A3] saut de ligne final ajouté")
+
+
 def write_atomic(path: Path, content: bytes):
     original_mode = stat.S_IMODE(path.stat().st_mode)
     fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -450,6 +482,7 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("-f", "--force", action="store_true", help="avec --fix, autoriser les changements de lignes sûrs")
     parser.add_argument("--diff", "--dry-run", action="store_true", help="afficher les changements sans écrire")
     parser.add_argument("--check", action="store_true", help="échouer si des corrections sont possibles")
+    parser.add_argument("-v", "--verbose", action="store_true", help="afficher chaque modification effectuée ou proposée")
     opts = parser.parse_args(argv)
     if opts.force and not (opts.fix or opts.diff or opts.check):
         parser.error("-f nécessite --fix, --diff ou --check")
@@ -479,6 +512,8 @@ def run(argv: list[str] | None = None) -> int:
                 # In safe mode a missing final LF is the sole allowed change.
                 raise ValueError(f"le mode sûr a modifié le nombre de lignes : {path}")
             pending = formatted != source
+            if opts.verbose and pending:
+                show_verbose_changes(path, source, formatted, opts.fix and not opts.diff)
             if opts.diff and pending:
                 sys.stdout.writelines(difflib.unified_diff(source.splitlines(True), formatted.splitlines(True),
                                   fromfile=str(path), tofile=str(path) + " (proposé)"))
