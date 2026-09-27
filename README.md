@@ -30,4 +30,4 @@ Ajoute `~/.local/bin` à ton `PATH` si nécessaire.
 epilint --fix -f -v fichier.c
 ```
 
-`-v` affiche les lignes modifiées et les règles corrigées. Pour prévisualiser sans écrire : `epilint --diff -f -v fichier.c`.
+`-v` affiche les numéros des lignes avant/après, les caractères modifiés en couleur, et rend les espaces (`·`) et tabulations (`⇥`) visibles. Pour prévisualiser sans écrire : `epilint --diff -f -v fichier.c`. Les couleurs sont automatiques dans un terminal ; utilise `--color=always` pour les conserver dans une redirection ou `--color=never` pour les désactiver.
