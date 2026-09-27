@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# This script ensures that epiclang is run with at least Python 3.11
+
+MIN_PYTHON_MAJOR=3
+MIN_PYTHON_MINOR=11
+
+PYTHON_VERSIONS=(python3.15 python3.14 python3.13 python3.12 python3.11)
+GENERIC_PYTHONS=(python3 python)
+
+is_minimum_python_version() {
+    local cmd="$1"
+    local version
+    local major
+    local minor
+
+    version=$("$cmd" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null) || return 1
+    major=${version%%.*}
+    minor=${version#*.}
+
+    if [ "$major" -gt "$MIN_PYTHON_MAJOR" ]; then
+        return 0
+    fi
+
+    if [ "$major" -eq "$MIN_PYTHON_MAJOR" ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+PYTHON_CMD=""
+for version in "${PYTHON_VERSIONS[@]}"; do
+    if command -v "$version" >/dev/null 2>&1; then
+        PYTHON_CMD="$version"
+        break
+    fi
+done
+
+if [ -z "$PYTHON_CMD" ]; then
+    for generic in "${GENERIC_PYTHONS[@]}"; do
+        if command -v "$generic" >/dev/null 2>&1 && is_minimum_python_version "$generic"; then
+            PYTHON_CMD="$generic"
+            break
+        fi
+    done
+fi
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo "Error: No suitable Python version found (${PYTHON_VERSIONS[*]} or ${GENERIC_PYTHONS[*]} >= ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR})" >&2
+    exit 1
+fi
+
+exec "$PYTHON_CMD" "$(dirname "$0")/epiclint.py" "$@"
