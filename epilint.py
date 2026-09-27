@@ -430,13 +430,57 @@ def paths_from(args: list[str]):
     return sorted(found)
 
 
-def show_verbose_changes(path: Path, before: str, after: str, applied: bool) -> None:
-    """Show the exact changed lines, including invisible blank lines."""
+def terminal_colors(mode: str) -> bool:
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return sys.stdout.isatty() and os.environ.get("TERM") != "dumb" and "NO_COLOR" not in os.environ
+
+
+def paint(value: str, code: str, enabled: bool) -> str:
+    return f"\033[{code}m{value}\033[0m" if enabled and value else value
+
+
+def visible_text(value: str) -> str:
+    """Show invisible whitespace and prevent source text from controlling a terminal."""
+    output = []
+    for char in value:
+        if char == " ":
+            output.append("·")
+        elif char == "\t":
+            output.append("⇥")
+        elif char == "\r":
+            output.append("␍")
+        elif ord(char) < 32 or ord(char) == 127:
+            output.append(f"\\x{ord(char):02x}")
+        else:
+            output.append(char)
+    return "".join(output) if output else "∅ (ligne vide)"
+
+
+def marked_pair(old: str, new: str, colors: bool) -> tuple[str, str]:
+    """Color only the character spans which actually changed on paired lines."""
+    before = []
+    after = []
+    for operation, a, b, c, d in difflib.SequenceMatcher(
+            None, old, new, autojunk=False).get_opcodes():
+        old_part = visible_text(old[a:b]) if a != b else ""
+        new_part = visible_text(new[c:d]) if c != d else ""
+        before.append(paint(old_part, "1;31", colors) if operation != "equal" else old_part)
+        after.append(paint(new_part, "1;32", colors) if operation != "equal" else new_part)
+    return "".join(before) or "∅ (ligne vide)", "".join(after) or "∅ (ligne vide)"
+
+
+def show_verbose_changes(path: Path, before: str, after: str,
+                         applied: bool, colors: bool) -> None:
+    """Print exact old/new line numbers and highlight changed character spans."""
     old_lines = before.splitlines()
     new_lines = after.splitlines()
     old_issues = diagnose(before)
     new_issues = diagnose(after)
     action = "corrigé" if applied else "proposé"
+    print(paint(f"{path} — {action} (· espace, ⇥ tabulation)", "1;36", colors))
     for tag, old_start, old_end, new_start, new_end in difflib.SequenceMatcher(
             None, old_lines, new_lines, autojunk=False).get_opcodes():
         if tag == "equal":
@@ -444,22 +488,33 @@ def show_verbose_changes(path: Path, before: str, after: str, applied: bool) -> 
         old_chunk = old_lines[old_start:old_end]
         new_chunk = new_lines[new_start:new_end]
         if all(not line.strip() for line in old_chunk + new_chunk):
-            rules = "C-G2 (séparation des fonctions)"
+            label = "lignes vides"
         else:
             before_rules = {issue.rule for issue in old_issues
                             if old_start <= issue.line - 1 < old_end}
             after_rules = {issue.rule for issue in new_issues
                            if new_start <= issue.line - 1 < new_end}
-            rules = ", ".join(sorted(before_rules - after_rules)) or "mise en forme"
-        print(f"{path}:{old_start + 1}: {action} [{rules}]")
-        for line in old_chunk:
-            print(f"  - {line!r}")
-        for line in new_chunk:
-            print(f"  + {line!r}")
+            label = ", ".join(sorted(before_rules - after_rules)) or "mise en forme"
+        if old_start == old_end:
+            location = f"après ancienne ligne {old_start} → nouvelles lignes {new_start + 1}–{new_end}"
+        elif new_start == new_end:
+            location = f"anciennes lignes {old_start + 1}–{old_end} supprimées"
+        else:
+            location = f"lignes {old_start + 1}–{old_end} → {new_start + 1}–{new_end}"
+        print(paint(f"  {location} [{label}]", "36", colors))
+        paired = tag == "replace" and len(old_chunk) == len(new_chunk)
+        for offset, line in enumerate(old_chunk):
+            rendered = marked_pair(line, new_chunk[offset], colors)[0] if paired else visible_text(line)
+            print(paint(f"  - {old_start + offset + 1:>4} │ ", "31", colors) +
+                  (rendered if paired else paint(rendered, "31", colors)))
+        for offset, line in enumerate(new_chunk):
+            rendered = marked_pair(old_chunk[offset], line, colors)[1] if paired else visible_text(line)
+            print(paint(f"  + {new_start + offset + 1:>4} │ ", "32", colors) +
+                  (rendered if paired else paint(rendered, "32", colors)))
     if "\r" in before and "\r" not in after:
-        print(f"{path}: {action} [C-G6] fins de ligne CR remplacées par LF")
+        print(paint("  ␍ → LF [C-G6] fins de ligne", "33", colors))
     if before and not before.endswith("\n") and after.endswith("\n"):
-        print(f"{path}: {action} [C-A3] saut de ligne final ajouté")
+        print(paint("  + saut de ligne final [C-A3]", "32", colors))
 
 
 def write_atomic(path: Path, content: bytes):
@@ -483,6 +538,8 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--diff", "--dry-run", action="store_true", help="afficher les changements sans écrire")
     parser.add_argument("--check", action="store_true", help="échouer si des corrections sont possibles")
     parser.add_argument("-v", "--verbose", action="store_true", help="afficher chaque modification effectuée ou proposée")
+    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+                        help="couleurs du mode -v (défaut : auto si terminal)")
     opts = parser.parse_args(argv)
     if opts.force and not (opts.fix or opts.diff or opts.check):
         parser.error("-f nécessite --fix, --diff ou --check")
@@ -513,7 +570,8 @@ def run(argv: list[str] | None = None) -> int:
                 raise ValueError(f"le mode sûr a modifié le nombre de lignes : {path}")
             pending = formatted != source
             if opts.verbose and pending:
-                show_verbose_changes(path, source, formatted, opts.fix and not opts.diff)
+                show_verbose_changes(path, source, formatted, opts.fix and not opts.diff,
+                                     terminal_colors(opts.color))
             if opts.diff and pending:
                 sys.stdout.writelines(difflib.unified_diff(source.splitlines(True), formatted.splitlines(True),
                                   fromfile=str(path), tofile=str(path) + " (proposé)"))
