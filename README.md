@@ -7,7 +7,7 @@ Formateur et vérificateur du coding style C d’Epitech.
 Python 3.9 ou plus récent et une clé SSH GitHub autorisée sont nécessaires :
 
 ```bash
-git clone git@github.com:Lluciocc/epilint.git && cd epilint && sudo bash install.sh
+git clone https://github.com/Lluciocc/epilint.git && cd epilint && sudo bash install.sh
 ```
 
 La commande installe `epilint` dans `/usr/local/bin`. Vérification :
