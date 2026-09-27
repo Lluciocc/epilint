@@ -190,6 +190,54 @@ def function_signature(line: str) -> bool:
     return bool(re.match(r"^(?:[\w*]+\s+)+[*\s]*[A-Za-z_]\w*\s*\([^;{}]*\)\s*(?:\{|$)", s))
 
 
+def normalize_function_separation(source: str) -> str:
+    """Keep exactly one empty line between adjacent function definitions."""
+    lines = source.split("\n")
+    masks = mask_literals(source).split("\n")
+    depth = 0
+    pending = False
+    in_function = False
+    previous_end = None
+    replacements = {}
+    for index, (line, code) in enumerate(zip(lines, masks)):
+        stripped = code.strip()
+        if not line.strip():
+            continue
+        signature = depth == 0 and (function_signature(code) or
+            bare_function_signature(code) or
+            (bool(re.fullmatch(r"\s*[A-Za-z_]\w*\s*\([^;{}]*\)\s*", code)) and
+             next((next_code.strip() for next_code in masks[index + 1:]
+                   if next_code.strip()), "") == "{" and
+             not re.match(r"\s*(?:if|for|while|switch)\b", code)))
+        if signature:
+            if previous_end is not None and all(
+                    not lines[pos].strip() for pos in range(previous_end + 1, index)):
+                replacements[previous_end + 1] = (index, [""])
+            previous_end = None
+            pending = "{" not in stripped
+            in_function = not pending
+        elif depth == 0 and pending and stripped == "{":
+            pending = False
+            in_function = True
+        elif depth == 0 and stripped and not pending:
+            previous_end = None
+        depth = max(0, depth + code.count("{") - code.count("}"))
+        if in_function and depth == 0:
+            in_function = False
+            previous_end = index
+    output = []
+    index = 0
+    while index < len(lines):
+        if index in replacements:
+            end, replacement = replacements.pop(index)
+            output.extend(replacement)
+            index = end
+        else:
+            output.append(lines[index])
+            index += 1
+    return "\n".join(output)
+
+
 def bare_function_signature(line: str) -> bool:
     """Old-style implicit-int definition, accepted only with its opening brace."""
     return bool(re.match(r"^\s*[A-Za-z_]\w*\s*\([^;{}]*\)\s*\{", line)) and not re.match(
@@ -294,7 +342,8 @@ def force_format(source: str) -> str:
         output.append(" " * (4 * level) + stripped)
         code = mask_literals(stripped)
         depth = max(0, depth + code.count("{") - code.count("}"))
-    return safe_format("\n".join(output) + ("\n" if source.endswith("\n") else ""))
+    result = "\n".join(output) + ("\n" if source.endswith("\n") else "")
+    return safe_format(normalize_function_separation(result))
 
 
 def diagnose(source: str) -> list[Issue]:
