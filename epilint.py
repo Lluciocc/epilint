@@ -244,6 +244,11 @@ def bare_function_signature(line: str) -> bool:
         r"^\s*(?:if|for|while|switch)\b", line)
 
 
+def unbraced_control(code: str) -> bool:
+    return bool(re.fullmatch(r"(?:(?:else\s+)?(?:if|while|for)\s*\(.*\)|else|do)",
+                             code.strip()))
+
+
 def safe_format(source: str) -> str:
     lines = source.split("\n")
     masks = mask_literals(source).split("\n")
@@ -311,18 +316,18 @@ def force_format(source: str) -> str:
             elif code == ";" and parens == 0:
                 chunk += ch
                 if chunk.strip():
-                    output.append(chunk.strip())
+                    output.append(chunk.rstrip())
                 chunk = ""
             elif code == "}" and parens == 0:
                 if chunk.strip():
-                    output.append(chunk.strip())
+                    output.append(chunk.rstrip())
                 output.append("}")
                 chunk = ""
                 depth = max(0, depth - 1)
             else:
                 chunk += ch
         if chunk.strip():
-            output.append(chunk.strip())
+            output.append(chunk.rstrip())
     # Join else with a closing brace, as required by C-L4.
     joined = []
     for line in output:
@@ -332,16 +337,27 @@ def force_format(source: str) -> str:
             joined.append(line)
     output = []
     depth = 0
+    pending_indent = 0
+    unbraced_depths = set()
     for line in joined:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             output.append(line)
             continue
         level = max(0, depth - int(stripped.startswith("}")))
-        # Keep a continued expression's indentation when no braces tell us its level.
-        output.append(" " * (4 * level) + stripped)
+        original_indent = len(line) - len(line.lstrip(" \t"))
+        indent = 4 * level
+        if stripped != "{" and (depth in unbraced_depths or pending_indent):
+            indent = max(indent, original_indent, pending_indent)
+        output.append(" " * indent + stripped)
         code = mask_literals(stripped)
+        if unbraced_control(code):
+            unbraced_depths.add(depth)
+            pending_indent = indent + 4
+        else:
+            pending_indent = 0
         depth = max(0, depth + code.count("{") - code.count("}"))
+        unbraced_depths = {level for level in unbraced_depths if level <= depth}
     result = "\n".join(output) + ("\n" if source.endswith("\n") else "")
     return safe_format(normalize_function_separation(result))
 
@@ -364,6 +380,7 @@ def diagnose(source: str) -> list[Issue]:
     depth = 0
     function_start = None
     pending_function = None
+    unbraced_depths = set()
     for n, (line, mask) in enumerate(zip(lines, masks), 1):
         content = line.rstrip("\r\n")
         code = mask.rstrip("\r\n")
@@ -377,8 +394,11 @@ def diagnose(source: str) -> list[Issue]:
             continue
         leading = len(content) - len(content.lstrip(" \t"))
         effective_depth = max(0, depth - (1 if code.lstrip().startswith("}") else 0))
+        expected = 4 * effective_depth
+        unbraced_body = (depth in unbraced_depths and
+                         code.strip() != "{" and leading > expected and leading % 4 == 0)
         if content[:leading].replace(" ", "") == "" and content.strip() and (
-                leading % 4 != 0 or leading != 4 * effective_depth):
+                leading % 4 != 0 or (leading != expected and not unbraced_body)):
             # This is diagnostic only: C without braces, labels, macro scopes,
             # initializers and continuations require a real parser.
             if not re.match(r"^(?:case\b|default\s*:|[A-Za-z_]\w*\s*:)", code.lstrip()):
@@ -404,7 +424,10 @@ def diagnose(source: str) -> list[Issue]:
         semis = code.count(";")
         if semis > 1 and not re.search(r"\bfor\s*\(", code):
             issues.append(Issue(n, 1, "C-L1", "plusieurs instructions sur la même ligne"))
+        if unbraced_control(code):
+            unbraced_depths.add(depth)
         depth = max(0, depth + code.count("{") - code.count("}"))
+        unbraced_depths = {level for level in unbraced_depths if level <= depth}
         if depth == 0 and function_start is not None:
             length = n - function_start - 1
             if length > 20:
