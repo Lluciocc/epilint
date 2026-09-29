@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# This script ensures that epiclang is run with at least Python 3.11
+# Run epilint with Python 3.9 or newer.
 
 MIN_PYTHON_MAJOR=3
-MIN_PYTHON_MINOR=11
+MIN_PYTHON_MINOR=9
 
-PYTHON_VERSIONS=(python3.15 python3.14 python3.13 python3.12 python3.11)
+PYTHON_VERSIONS=(python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 python3.9)
 GENERIC_PYTHONS=(python3 python)
 
 is_minimum_python_version() {
@@ -50,4 +50,4 @@ if [ -z "$PYTHON_CMD" ]; then
     exit 1
 fi
 
-exec "$PYTHON_CMD" "$(dirname "$0")/epiclint.py" "$@"
+exec "$PYTHON_CMD" "$(dirname "$0")/epilint.py" "$@"
